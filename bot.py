@@ -11,6 +11,13 @@ import sqlite3
 from datetime import datetime
 from database import create_table
 from services import insert_prayer, fetch_prayers, update_prayer, delete_prayer
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.types import ParseMode
+from aiogram.utils import executor
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 # Load environment variables from .env file
 load_dotenv()
@@ -32,60 +39,40 @@ logger.info('Bot is starting')
 # Ensure the prayers table is created
 create_table()
 
+# Define the PrayerStates class
+class PrayerStates(StatesGroup):
+    expecting_prayer = State()
+
+# Initialize the bot and dispatcher with MemoryStorage
+storage = MemoryStorage()
+bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher(bot, storage=storage)
+dp.middleware.setup(LoggingMiddleware())
+
 # Define a simple start command handler
-def start(update: Update, context: CallbackContext) -> None:
-    # Determine if the call is from a message or a callback query
-    if update.message:
-        # Called from a message
-        message = update.message
-    else:
-        # Called from a callback query
-        message = update.callback_query.message
-
-    # Create an inline keyboard with a single button
-    keyboard = [[InlineKeyboardButton('send pray', callback_data='send_pray')],
-                [InlineKeyboardButton('Show my prayers', callback_data='show_my_prayers')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Send a message with the inline keyboard
-    message.reply_text('Hello! I am your bot.', reply_markup=reply_markup)
-
-    # Log the incoming request
-    logger.info('Received /start command', extra={
-        'user_id': update.effective_user.id,
-        'username': update.effective_user.username,
-        'user_message': message.text if update.message else 'callback'
-    })
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.add(types.InlineKeyboardButton('send pray', callback_data='send_pray'))
+    keyboard.add(types.InlineKeyboardButton('Show my prayers', callback_data='show_my_prayers'))
+    await message.reply("Hello! I am your bot.", reply_markup=keyboard)
 
 # Define a callback query handler
-def button_callback(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    query.answer()
-    query.edit_message_text(text="Please enter your prayer:")
-
-    # Set the state to expect a message
-    context.user_data['expecting_prayer'] = True
+@dp.callback_query_handler(lambda c: c.data == 'send_pray')
+async def process_callback_send_pray(callback_query: types.CallbackQuery, state: FSMContext):
+    await bot.answer_callback_query(callback_query.id)
+    await bot.send_message(callback_query.from_user.id, "Please enter your prayer:")
+    await PrayerStates.expecting_prayer.set()
+    logger.info('State set to expecting_prayer')
 
 # Define a message handler to capture user input
-def capture_prayer(update: Update, context: CallbackContext) -> None:
-    if context.user_data.get('expecting_prayer'):
-        # Log the user's prayer
-        logger.info('User prayer received', extra={
-            'user_id': update.effective_user.id,
-            'username': update.effective_user.username,
-            'prayer': update.message.text
-        })
-        
-        # Insert the prayer into the database
-        insert_prayer(update.effective_user.id, update.effective_user.username, update.message.text)
-        
-        # Add a button to return to the main menu
-        keyboard = [[InlineKeyboardButton('К главному окну', callback_data='main_menu')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        update.message.reply_text('Prayer recorded.', reply_markup=reply_markup)
-        
-        # # Reset the state
-        # context.user_data['expecting_prayer'] = False
+@dp.message_handler(state=PrayerStates.expecting_prayer)
+async def capture_prayer(message: types.Message, state: FSMContext):
+    logger.info('Received prayer: %s', message.text)
+    # Insert prayer into the database
+    # Reset state
+    await message.reply("Prayer recorded.")
+    await state.finish()
 
 # Define a command handler to list prayers
 def my_prayers(update: Update, context: CallbackContext) -> None:
@@ -150,6 +137,25 @@ def capture_edit(update: Update, context: CallbackContext) -> None:
         update.message.reply_text('Prayer updated.')
         context.user_data['expecting_edit'] = False
 
+# Define a callback query handler for showing prayers
+@dp.callback_query_handler(lambda c: c.data == 'show_my_prayers')
+async def show_my_prayers(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    logger.info('Fetching prayers for user_id: %s', user_id)
+    prayers = fetch_prayers(user_id)
+    
+    if not prayers:
+        await bot.send_message(callback_query.from_user.id, 'You have no prayers recorded.')
+        return
+
+    for prayer_id, prayer_text in prayers:
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton('Edit', callback_data=f'edit_{prayer_id}'))
+        keyboard.add(types.InlineKeyboardButton('Delete', callback_data=f'delete_{prayer_id}'))
+        await bot.send_message(callback_query.from_user.id, prayer_text, reply_markup=keyboard)
+
+    await bot.answer_callback_query(callback_query.id)
+
 # Main function to start the bot
 def main() -> None:
     # Create the Updater and pass it your bot's token.
@@ -162,7 +168,7 @@ def main() -> None:
     dp.add_handler(CommandHandler('start', start))
 
     # Register the callback query handler
-    dp.add_handler(CallbackQueryHandler(button_callback, pattern='^send_pray$'))
+    dp.add_handler(CallbackQueryHandler(process_callback_send_pray, pattern='^send_pray$'))
 
     # Register the message handler
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, capture_prayer))
@@ -175,6 +181,9 @@ def main() -> None:
 
     # Register the message handler to capture edited prayer text
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, capture_edit))
+
+    # Register the callback query handler for showing prayers
+    dp.register_callback_query_handler(show_my_prayers, lambda c: c.data == 'show_my_prayers')
 
     # Start the Bot
     updater.start_polling()
@@ -189,4 +198,4 @@ def main() -> None:
     logger.info('Bot has stopped')
 
 if __name__ == '__main__':
-    main() 
+    executor.start_polling(dp, skip_updates=True) 
