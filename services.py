@@ -24,4 +24,10 @@ def update_prayer(prayer_id, new_text):
 # Function to delete a prayer from the database
 def delete_prayer(prayer_id):
     cursor.execute('DELETE FROM prayers WHERE id = ?', (prayer_id,))
-    conn.commit() 
+    conn.commit()
+
+# Function to fetch a single prayer by ID
+def get_prayer_by_id(prayer_id):
+    cursor.execute('SELECT prayer FROM prayers WHERE id = ?', (prayer_id,))
+    result = cursor.fetchone()
+    return result[0] if result else None 
