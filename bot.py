@@ -5,13 +5,14 @@ from dotenv import load_dotenv
 import os
 import logging
 import json_log_formatter
+import asyncio
 from database import create_table
 from aiogram import Bot, Dispatcher
-from aiogram.types import ParseMode
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.utils import executor
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram_dialog.setup import setup_dialogs
 from handlers import register_handlers
+from dialogs import dialog
+from aiogram.enums import ParseMode
 
 def setup_logging():
     # Set up JSON logging
@@ -23,7 +24,7 @@ def setup_logging():
     logger.setLevel(logging.INFO)
     return logger
 
-async def on_startup(dp: Dispatcher):
+async def on_startup(dp: Dispatcher, bot: Bot):
     # Log the start of the bot
     logger.info('Bot is starting')
     # Ensure the prayers table is created
@@ -31,7 +32,7 @@ async def on_startup(dp: Dispatcher):
     # Register all handlers
     register_handlers(dp)
 
-def main():
+async def main():
     # Load environment variables from .env file
     load_dotenv()
 
@@ -43,18 +44,28 @@ def main():
     # Initialize the bot and dispatcher with MemoryStorage
     storage = MemoryStorage()
     bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
-    dp = Dispatcher(bot, storage=storage)
-    dp.middleware.setup(LoggingMiddleware())
+    dp = Dispatcher(storage=storage)
+    
+    # Setup logging
+    logger.info('Setting up bot with logging')
 
-    # Start the bot using aiogram's executor
-    executor.start_polling(
-        dp,
-        skip_updates=True,
-        on_startup=on_startup
-    )
+    # Setup dialogs
+    setup_dialogs(dp)
+
+    # Register dialog
+    dp.include_router(dialog)
+
+    # Call startup handler
+    await on_startup(dp, bot)
+    
+    # Start polling
+    try:
+        await dp.start_polling(bot, skip_updates=True)
+    finally:
+        await bot.session.close()
 
 if __name__ == '__main__':
     # Setup logging
     logger = setup_logging()
     # Run the bot
-    main() 
+    asyncio.run(main()) 
