@@ -12,6 +12,9 @@ from aiogram.utils.token import TokenValidationError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from handlers import register_handlers
+from aiogram.types import BotCommand, BotCommandScopeDefault
+from aiogram.methods.set_chat_menu_button import SetChatMenuButton
+from aiogram.types import MenuButtonDefault
 
 def setup_logging():
     # Set up JSON logging
@@ -50,6 +53,17 @@ async def main():
     register_handlers(dp)
     
     # No more middleware.setup, use dp.update.middleware instead if needed
+    
+    # Set up commands for the bot
+    commands = [
+        BotCommand(command="start", description="Розпочати роботу з ботом")
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    
+    # Set menu button to default type (hamburger menu)
+    await bot.set_chat_menu_button(
+        menu_button=MenuButtonDefault()
+    )
     
     # Start polling updates instead of using executor
     logger.info('Starting bot')

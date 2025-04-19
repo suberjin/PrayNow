@@ -11,6 +11,7 @@ from services import (
 )
 from database import get_all_categories, get_category_by_id, cursor
 from datetime import datetime
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -41,14 +42,53 @@ async def show_main_menu(message_or_callback):
 
 @router.message(Command("start"))
 async def start_handler(message: Message):
+    # Call the common start function
+    await start_without_command(message)
+
+# Handle any text message from a new user
+@router.message(F.text)
+async def handle_text(message: Message, state: FSMContext):
+    # Check if user is already in a specific state
+    current_state = await state.get_state()
+    
+    # If user is already in a state, let other handlers process the message
+    if current_state is not None:
+        return
+    
+    # If the message is "Start" trigger the start handler
+    if message.text == "Start" or message.text == "Старт":
+        await start_without_command(message)
+        return
+    
+    # If it's a new user, show the start button
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Старт")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    
+    await message.answer(
+        "Натисніть кнопку для початку роботи з ботом",
+        reply_markup=keyboard
+    )
+
+# Handler for the Start button press
+async def start_without_command(message: Message):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    # Remove the keyboard with the Start button
+    remove_keyboard = ReplyKeyboardRemove()
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='Надіслати молитву', callback_data='send_pray')],
         [InlineKeyboardButton(text='Показати всі молитви', callback_data='show_all_prayers')],
         [InlineKeyboardButton(text='Показати мої молитви', callback_data='show_my_prayers')],
     ])
-    await message.answer("Вітаю! Я бот для запису ваших молитов.", reply_markup=keyboard)
+    
+    await message.answer(
+        "Вітаю! Я бот для запису ваших молитов.", 
+        reply_markup=keyboard
+    )
 
 @router.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback_query: CallbackQuery, state: FSMContext):
