@@ -148,8 +148,9 @@ async def capture_prayer(message: Message, state: FSMContext):
         # Insert new prayer with category
         insert_prayer(user_id, username, prayer_text, category_id, first_name, last_name)
         
-        # Добавляем кнопку возврата в главное меню
+        # Add "Надіслати молитву" button and the main menu button
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='Надіслати ще молитву', callback_data='send_pray')],
             [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
         ])
         
