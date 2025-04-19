@@ -7,10 +7,10 @@ import logging
 import json_log_formatter
 from database import create_table
 from aiogram import Bot, Dispatcher
-from aiogram.types import ParseMode
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.utils import executor
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.enums import ParseMode
+from aiogram.utils.token import TokenValidationError
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties
 from handlers import register_handlers
 
 def setup_logging():
@@ -31,7 +31,7 @@ async def on_startup(dp: Dispatcher):
     # Register all handlers
     register_handlers(dp)
 
-def main():
+async def main():
     # Load environment variables from .env file
     load_dotenv()
 
@@ -40,21 +40,30 @@ def main():
     if not TELEGRAM_TOKEN:
         raise ValueError("TELEGRAM_TOKEN environment variable is not set!")
 
-    # Initialize the bot and dispatcher with MemoryStorage
+    # Initialize the bot and storage
     storage = MemoryStorage()
-    bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
-    dp = Dispatcher(bot, storage=storage)
-    dp.middleware.setup(LoggingMiddleware())
-
-    # Start the bot using aiogram's executor
-    executor.start_polling(
-        dp,
-        skip_updates=True,
-        on_startup=on_startup
-    )
+    bot = Bot(token=TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    
+    # Initialize the dispatcher with storage (v3 way)
+    dp = Dispatcher(storage=storage)
+    
+    # Register all handlers
+    register_handlers(dp)
+    
+    # No more middleware.setup, use dp.update.middleware instead if needed
+    
+    # Start polling updates instead of using executor
+    logger.info('Starting bot')
+    
+    # To skip pending updates if needed:
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Start polling (v3 way)
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == '__main__':
     # Setup logging
     logger = setup_logging()
     # Run the bot
-    main() 
+    import asyncio
+    asyncio.run(main()) 
