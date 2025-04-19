@@ -2,23 +2,40 @@ from database import conn, cursor
 from datetime import datetime
 
 # Function to insert a prayer into the database
-def insert_prayer(user_id, username, prayer, first_name="", last_name=""):
+def insert_prayer(user_id, username, prayer, category_id, first_name="", last_name=""):
     now = datetime.now().isoformat()
     cursor.execute('''
-    INSERT INTO prayers (user_id, username, first_name, last_name, prayer, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, username, first_name, last_name, prayer, now, now))
+    INSERT INTO prayers (user_id, username, first_name, last_name, prayer, category_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (user_id, username, first_name, last_name, prayer, category_id, now, now))
     conn.commit()
 
 # Function to fetch all prayers for a user
 def fetch_prayers(user_id):
-    cursor.execute('SELECT id, prayer FROM prayers WHERE user_id = ?', (user_id,))
+    cursor.execute('''
+    SELECT p.id, p.prayer, c.name 
+    FROM prayers p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.user_id = ? 
+    ORDER BY p.created_at DESC
+    ''', (user_id,))
     return cursor.fetchall()
 
 # Function to update a prayer in the database
-def update_prayer(prayer_id, new_text):
+def update_prayer(prayer_id, new_text, category_id=None):
     now = datetime.now().isoformat()
-    cursor.execute('UPDATE prayers SET prayer = ?, updated_at = ? WHERE id = ?', (new_text, now, prayer_id))
+    if category_id is not None:
+        cursor.execute('''
+        UPDATE prayers 
+        SET prayer = ?, category_id = ?, updated_at = ? 
+        WHERE id = ?
+        ''', (new_text, category_id, now, prayer_id))
+    else:
+        cursor.execute('''
+        UPDATE prayers 
+        SET prayer = ?, updated_at = ? 
+        WHERE id = ?
+        ''', (new_text, now, prayer_id))
     conn.commit()
 
 # Function to delete a prayer from the database
@@ -28,9 +45,14 @@ def delete_prayer(prayer_id):
 
 # Function to fetch a single prayer by ID
 def get_prayer_by_id(prayer_id):
-    cursor.execute('SELECT prayer FROM prayers WHERE id = ?', (prayer_id,))
+    cursor.execute('''
+    SELECT p.prayer, p.category_id, c.name
+    FROM prayers p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.id = ?
+    ''', (prayer_id,))
     result = cursor.fetchone()
-    return result[0] if result else None 
+    return result if result else None
 
 # Function to fetch all prayers from all users
 def fetch_all_prayers(limit=10, offset=0):
@@ -45,9 +67,10 @@ def fetch_all_prayers(limit=10, offset=0):
         Список молитв с указанным ограничением и смещением
     """
     query = '''
-    SELECT prayer, username, created_at, first_name, last_name 
-    FROM prayers 
-    ORDER BY created_at DESC
+    SELECT p.prayer, p.username, p.created_at, p.first_name, p.last_name, c.name
+    FROM prayers p
+    LEFT JOIN categories c ON p.category_id = c.id
+    ORDER BY p.created_at DESC
     LIMIT ? OFFSET ?
     '''
     

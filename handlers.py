@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import logging
 from services import insert_prayer, fetch_prayers, update_prayer, delete_prayer, get_prayer_by_id, fetch_all_prayers, count_all_prayers
+from database import get_all_categories, get_category_by_id
 from datetime import datetime
 
 # Get logger
@@ -15,6 +16,7 @@ router = Router()
 
 # Define the PrayerStates class
 class PrayerStates(StatesGroup):
+    selecting_category = State()
     expecting_prayer = State()
 
 # Функция для создания главного меню
@@ -55,15 +57,49 @@ async def main_menu_callback(callback_query: CallbackQuery, state: FSMContext):
 async def process_callback_send_pray(callback_query: CallbackQuery, state: FSMContext):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
-    user_id = callback_query.from_user.id
     await callback_query.answer(show_alert=False)
     
-    # Добавляем кнопку возврата в главное меню
+    # Get all categories
+    categories = get_all_categories()
+    
+    # Create keyboard with categories
+    buttons = []
+    for category_id, category_name in categories:
+        buttons.append([InlineKeyboardButton(text=category_name, callback_data=f'category_{category_id}')])
+    
+    # Add back button
+    buttons.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback_query.message.answer("Оберіть категорію молитви:", reply_markup=keyboard)
+    await state.set_state(PrayerStates.selecting_category)
+    logger.info('State set to selecting_category')
+
+@router.callback_query(PrayerStates.selecting_category, F.data.startswith("category_"))
+async def process_category_selection(callback_query: CallbackQuery, state: FSMContext):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    await callback_query.answer(show_alert=False)
+    
+    # Extract category ID from callback data
+    category_id = int(callback_query.data.split("_")[1])
+    category_name = get_category_by_id(category_id)
+    
+    # Store selected category in state
+    await state.update_data(selected_category_id=category_id, selected_category_name=category_name)
+    
+    # Create keyboard with back button
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
     ])
     
-    await callback_query.message.answer("Будь ласка, введіть вашу молитву:", reply_markup=keyboard)
+    await callback_query.message.answer(
+        f"Ви обрали категорію: <b>{category_name}</b>\nБудь ласка, введіть вашу молитву:",
+        reply_markup=keyboard
+    )
+    
+    # Move to next state
     await state.set_state(PrayerStates.expecting_prayer)
     logger.info('State set to expecting_prayer')
 
@@ -76,14 +112,19 @@ async def capture_prayer(message: Message, state: FSMContext):
     first_name = message.from_user.first_name or ""
     last_name = message.from_user.last_name or ""
     prayer_text = message.text
+    
+    # Get state data
+    state_data = await state.get_data()
 
     # Check if we're editing an existing prayer
-    state_data = await state.get_data()
     if 'edit_prayer_id' in state_data:
         prayer_id = state_data['edit_prayer_id']
         
+        # Check if we need to update the category
+        category_id = state_data.get('selected_category_id', None)
+        
         # Обновляем молитву в БД
-        update_prayer(prayer_id, prayer_text)
+        update_prayer(prayer_id, prayer_text, category_id)
         
         # Добавляем кнопку возврата в главное меню
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -96,14 +137,22 @@ async def capture_prayer(message: Message, state: FSMContext):
             reply_markup=keyboard
         )
     else:
-        insert_prayer(user_id, username, prayer_text, first_name, last_name)
+        # Get selected category from state
+        category_id = state_data.get('selected_category_id')
+        category_name = state_data.get('selected_category_name', 'Невідома')
+        
+        # Insert new prayer with category
+        insert_prayer(user_id, username, prayer_text, category_id, first_name, last_name)
         
         # Добавляем кнопку возврата в главное меню
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
         ])
         
-        await message.answer("✅ Молитву записано.", reply_markup=keyboard)
+        await message.answer(
+            f"✅ <b>Молитву записано в категорії {category_name}.</b>",
+            reply_markup=keyboard
+        )
 
     await state.clear()
 
@@ -128,7 +177,7 @@ async def my_prayers(message: Message):
     MAX_MESSAGE_LENGTH = 4000  # Slightly less than the limit for safety
     
     # Показываем все молитвы
-    for prayer_id, prayer_text in prayers:
+    for prayer_id, prayer_text, category_name in prayers:
         # Создаем клавиатуру для действий с молитвой
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -137,12 +186,18 @@ async def my_prayers(message: Message):
             ]
         ])
         
+        # Add category to message
+        category_info = f"<b>Категорія: {category_name or 'Не вказана'}</b>\n\n"
+        
         # Проверяем длину сообщения
-        if len(prayer_text) <= MAX_MESSAGE_LENGTH:
+        if len(prayer_text) + len(category_info) <= MAX_MESSAGE_LENGTH:
             # Если сообщение не слишком длинное, отправляем его полностью с клавиатурой
-            await message.answer(prayer_text, reply_markup=keyboard)
+            await message.answer(f"{category_info}{prayer_text}", reply_markup=keyboard)
         else:
             # Если сообщение слишком длинное, разбиваем его на части
+            # Отправляем сначала заголовок с категорией
+            await message.answer(category_info)
+            
             # Разбиваем длинный текст на части
             remaining_text = prayer_text
             part_number = 1
@@ -182,10 +237,13 @@ async def prayer_callback(callback_query: CallbackQuery, state: FSMContext):
 
     if data.startswith('edit_'):
         prayer_id = int(data.split('_')[1])
-        original_text = get_prayer_by_id(prayer_id)
-        if original_text:
+        result = get_prayer_by_id(prayer_id)
+        
+        if result:
+            prayer_text, category_id, category_name = result
+            
             # Проверяем длину молитвы для редактирования
-            if len(original_text) > 3072:
+            if len(prayer_text) > 3072:
                 # Молитва слишком длинная для редактирования в Telegram
                 # Создаем клавиатуру с кнопками для удаления и возврата в меню
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -204,24 +262,30 @@ async def prayer_callback(callback_query: CallbackQuery, state: FSMContext):
                     reply_markup=keyboard
                 )
             else:
-                # Молитва подходящей длины для редактирования
-                # Создаем клавиатуру с кнопкой отмены и возврата в меню
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text='Скасувати', callback_data='cancel_edit')],
-                    [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
-                ])
+                # Offer to choose a new category or keep the existing one
+                categories = get_all_categories()
                 
-                # Отправляем сообщение с текущим текстом и инструкцией
+                # Create keyboard with categories and cancel button
+                buttons = []
+                for cat_id, cat_name in categories:
+                    if cat_id == category_id:
+                        # Mark the current category
+                        buttons.append([InlineKeyboardButton(text=f"✓ {cat_name}", callback_data=f'editcat_{prayer_id}_{cat_id}')])
+                    else:
+                        buttons.append([InlineKeyboardButton(text=cat_name, callback_data=f'editcat_{prayer_id}_{cat_id}')])
+                
+                buttons.append([InlineKeyboardButton(text='Скасувати', callback_data='cancel_edit')])
+                buttons.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+                
+                # Отправляем сообщение с выбором категории
                 await callback_query.message.answer(
-                    text=f"✏️ <b>Редагування молитви:</b>\n\n"
-                         f"{original_text}\n\n"
-                         f"<i>Будь ласка, надішліть новий текст молитви або натисніть Скасувати.</i>",
+                    text=f"✏️ <b>Редагування молитви</b>\n\n"
+                         f"Поточна категорія: <b>{category_name or 'Не вказана'}</b>\n\n"
+                         f"Оберіть нову категорію або залиште поточну:",
                     reply_markup=keyboard
                 )
-                
-                # Сохраняем ID молитвы для редактирования в состоянии
-                await state.update_data(edit_prayer_id=prayer_id, original_text=original_text)
-                await state.set_state(PrayerStates.expecting_prayer)
         else:
             # Молитва не найдена
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -246,6 +310,59 @@ async def prayer_callback(callback_query: CallbackQuery, state: FSMContext):
             text='Молитву видалено.',
             reply_markup=keyboard
         )
+
+@router.callback_query(F.data.startswith("editcat_"))
+async def edit_prayer_category(callback_query: CallbackQuery, state: FSMContext):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    # Parse the callback data to get prayer_id and category_id
+    _, prayer_id, category_id = callback_query.data.split("_")
+    prayer_id = int(prayer_id)
+    category_id = int(category_id)
+    
+    # Get the category name
+    category_name = get_category_by_id(category_id)
+    
+    # Get the prayer text
+    result = get_prayer_by_id(prayer_id)
+    if result:
+        prayer_text = result[0]
+        
+        # Store the prayer ID and category in state
+        await state.update_data(
+            edit_prayer_id=prayer_id,
+            selected_category_id=category_id,
+            selected_category_name=category_name
+        )
+        
+        # Create keyboard with back button
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='Скасувати', callback_data='cancel_edit')],
+            [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
+        ])
+        
+        # Отправляем сообщение с текущим текстом и инструкцией
+        await callback_query.message.answer(
+            text=f"✏️ <b>Редагування молитви в категорії {category_name}</b>\n\n"
+                 f"{prayer_text}\n\n"
+                 f"<i>Будь ласка, надішліть новий текст молитви або натисніть Скасувати.</i>",
+            reply_markup=keyboard
+        )
+        
+        # Set state to expect prayer text
+        await state.set_state(PrayerStates.expecting_prayer)
+    else:
+        # Prayer not found
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
+        ])
+        
+        await callback_query.message.answer(
+            text='Вибачте, молитву не знайдено.',
+            reply_markup=keyboard
+        )
+    
+    await callback_query.answer(show_alert=False)
 
 @router.callback_query(F.data == "cancel_edit")
 async def cancel_edit(callback_query: CallbackQuery, state: FSMContext):
@@ -288,7 +405,7 @@ async def show_my_prayers(callback_query: CallbackQuery):
     MAX_MESSAGE_LENGTH = 4000  # Slightly less than the limit for safety
     
     # Показываем все молитвы пользователя
-    for prayer_id, prayer_text in prayers:
+    for prayer_id, prayer_text, category_name in prayers:
         # Создаем клавиатуру для действий с молитвой
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -297,12 +414,18 @@ async def show_my_prayers(callback_query: CallbackQuery):
             ]
         ])
         
+        # Add category to message
+        category_info = f"<b>Категорія: {category_name or 'Не вказана'}</b>\n\n"
+        
         # Проверяем длину сообщения
-        if len(prayer_text) <= MAX_MESSAGE_LENGTH:
+        if len(prayer_text) + len(category_info) <= MAX_MESSAGE_LENGTH:
             # Если сообщение не слишком длинное, отправляем его полностью с клавиатурой
-            await callback_query.message.answer(prayer_text, reply_markup=keyboard)
+            await callback_query.message.answer(f"{category_info}{prayer_text}", reply_markup=keyboard)
         else:
             # Если сообщение слишком длинное, разбиваем его на части
+            # Отправляем сначала заголовок с категорией
+            await callback_query.message.answer(category_info)
+            
             # Разбиваем длинный текст на части
             remaining_text = prayer_text
             part_number = 1
@@ -370,6 +493,7 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
     # Показываем молитвы из текущей страницы
     for prayer in prayers:
         prayer_text = prayer[0]  # Текст молитвы - первый элемент
+        category_name = prayer[5] if len(prayer) > 5 else "Не вказана"  # Category is the sixth element
         
         # Получаем имя и фамилию, или используем username, если их нет
         author = "Анонім"
@@ -402,7 +526,7 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
                 pass
         
         # Формируем заголовок сообщения
-        header = f"<b>Молитва від {author}{created_at}:</b>\n\n"
+        header = f"<b>Молитва від {author}{created_at}</b>\n<b>Категорія: {category_name}</b>\n\n"
         
         # Проверяем длину сообщения
         if len(prayer_text) + len(header) <= MAX_MESSAGE_LENGTH:
