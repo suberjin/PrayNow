@@ -7,16 +7,20 @@ cursor = conn.cursor()
 
 # Create the prayers table if it doesn't exist
 def create_table():
+    # Создаем таблицу если её нет
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS prayers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         username TEXT,
+        first_name TEXT,
+        last_name TEXT,
         prayer TEXT,
         created_at TEXT,
         updated_at TEXT
     )
     ''')
+
     conn.commit()
 
 # Expose the connection and cursor for use in other modules

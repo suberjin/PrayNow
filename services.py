@@ -2,12 +2,12 @@ from database import conn, cursor
 from datetime import datetime
 
 # Function to insert a prayer into the database
-def insert_prayer(user_id, username, prayer):
+def insert_prayer(user_id, username, prayer, first_name="", last_name=""):
     now = datetime.now().isoformat()
     cursor.execute('''
-    INSERT INTO prayers (user_id, username, prayer, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, username, prayer, now, now))
+    INSERT INTO prayers (user_id, username, first_name, last_name, prayer, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (user_id, username, first_name, last_name, prayer, now, now))
     conn.commit()
 
 # Function to fetch all prayers for a user
@@ -31,3 +31,36 @@ def get_prayer_by_id(prayer_id):
     cursor.execute('SELECT prayer FROM prayers WHERE id = ?', (prayer_id,))
     result = cursor.fetchone()
     return result[0] if result else None 
+
+# Function to fetch all prayers from all users
+def fetch_all_prayers(limit=10, offset=0):
+    """
+    Получает все молитвы с пагинацией для избежания загрузки слишком большого набора данных.
+    
+    Args:
+        limit: Максимальное количество молитв для загрузки за один раз
+        offset: Смещение от начала списка
+        
+    Returns:
+        Список молитв с указанным ограничением и смещением
+    """
+    query = '''
+    SELECT prayer, username, created_at, first_name, last_name 
+    FROM prayers 
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+    '''
+    
+    cursor.execute(query, (limit, offset))
+    return cursor.fetchall()
+
+# Function to count total prayers
+def count_all_prayers():
+    """
+    Подсчитывает общее количество молитв.
+    
+    Returns:
+        Целое число - количество молитв
+    """
+    cursor.execute('SELECT COUNT(*) FROM prayers')
+    return cursor.fetchone()[0] 

@@ -23,13 +23,12 @@ def setup_logging():
     logger.setLevel(logging.INFO)
     return logger
 
-async def on_startup(dp: Dispatcher):
+def on_startup():
     # Log the start of the bot
     logger.info('Bot is starting')
     # Ensure the prayers table is created
     create_table()
     # Register all handlers
-    register_handlers(dp)
 
 async def main():
     # Load environment variables from .env file
@@ -66,4 +65,5 @@ if __name__ == '__main__':
     logger = setup_logging()
     # Run the bot
     import asyncio
+    on_startup()
     asyncio.run(main()) 
