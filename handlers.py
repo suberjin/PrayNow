@@ -4,8 +4,12 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import logging
-from services import insert_prayer, fetch_prayers, update_prayer, delete_prayer, get_prayer_by_id, fetch_all_prayers, count_all_prayers
-from database import get_all_categories, get_category_by_id
+from services import (
+    insert_prayer, fetch_prayers, update_prayer, delete_prayer, get_prayer_by_id, 
+    fetch_all_prayers, count_all_prayers, fetch_prayers_by_category, 
+    fetch_all_prayers_by_category, count_prayers_by_category
+)
+from database import get_all_categories, get_category_by_id, cursor
 from datetime import datetime
 
 # Get logger
@@ -385,13 +389,52 @@ async def cancel_edit(callback_query: CallbackQuery, state: FSMContext):
 async def show_my_prayers(callback_query: CallbackQuery):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
-    user_id = callback_query.from_user.id
-    logger.info('Fetching prayers for user_id: %s', user_id)
-    prayers = fetch_prayers(user_id)
+    # Get all categories
+    categories = get_all_categories()
     
-    if not prayers:
-        # Добавляем кнопку возврата в главное меню
+    # Create keyboard with categories
+    buttons = []
+    for category_id, category_name in categories:
+        buttons.append([InlineKeyboardButton(text=category_name, callback_data=f'myprayers_cat_{category_id}')])
+    
+    # Add "All categories" button
+    buttons.append([InlineKeyboardButton(text='Всі', callback_data='myprayers_cat_all')])
+    
+    # Add back button
+    buttons.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback_query.message.answer("Оберіть категорію молитв для перегляду:", reply_markup=keyboard)
+    await callback_query.answer(show_alert=False)
+
+@router.callback_query(F.data.startswith("myprayers_cat_"))
+async def show_my_prayers_by_category(callback_query: CallbackQuery):
+    category_param = callback_query.data.split("_")[-1]
+    
+    if category_param == 'all':
+        # Show all prayers from user (using pagination)
+        await show_my_prayers_page(callback_query, 0)
+    else:
+        # Show prayers from specific category
+        category_id = int(category_param)
+        await show_my_prayers_page_by_category(callback_query, category_id, 0)
+
+# Function to show user's prayers with pagination
+async def show_my_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=5):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    user_id = callback_query.from_user.id
+    logger.info(f'Fetching user prayers with offset={offset}, batch_size={batch_size}')
+    
+    # Count total prayers from this user
+    cursor.execute('SELECT COUNT(*) FROM prayers WHERE user_id = ?', (user_id,))
+    total_prayers = cursor.fetchone()[0]
+    
+    if total_prayers == 0:
+        # If no prayers
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='↩️ Назад до категорій', callback_data='show_my_prayers')],
             [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
         ])
         
@@ -399,14 +442,26 @@ async def show_my_prayers(callback_query: CallbackQuery):
             'У вас немає записаних молитов.',
             reply_markup=keyboard
         )
+        await callback_query.answer(show_alert=False)
         return
-
+    
+    # Get prayers with pagination for this user
+    cursor.execute('''
+    SELECT p.id, p.prayer, c.name
+    FROM prayers p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.user_id = ?
+    ORDER BY p.created_at DESC
+    LIMIT ? OFFSET ?
+    ''', (user_id, batch_size, offset))
+    prayers = cursor.fetchall()
+    
     # Telegram message length limit (4096 characters)
     MAX_MESSAGE_LENGTH = 4000  # Slightly less than the limit for safety
     
-    # Показываем все молитвы пользователя
+    # Show prayers from current page
     for prayer_id, prayer_text, category_name in prayers:
-        # Создаем клавиатуру для действий с молитвой
+        # Create keyboard for actions with prayer
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text='Редагувати', callback_data=f'edit_{prayer_id}'),
@@ -417,50 +472,400 @@ async def show_my_prayers(callback_query: CallbackQuery):
         # Add category to message
         category_info = f"<b>Категорія: {category_name or 'Не вказана'}</b>\n\n"
         
-        # Проверяем длину сообщения
+        # Check message length
         if len(prayer_text) + len(category_info) <= MAX_MESSAGE_LENGTH:
-            # Если сообщение не слишком длинное, отправляем его полностью с клавиатурой
+            # If message is not too long, send it completely with keyboard
             await callback_query.message.answer(f"{category_info}{prayer_text}", reply_markup=keyboard)
         else:
-            # Если сообщение слишком длинное, разбиваем его на части
-            # Отправляем сначала заголовок с категорией
+            # If message is too long, split it into parts
+            # Send header with category first
             await callback_query.message.answer(category_info)
             
-            # Разбиваем длинный текст на части
+            # Split long text into parts
             remaining_text = prayer_text
             part_number = 1
             total_parts = (len(prayer_text) + MAX_MESSAGE_LENGTH - 1) // MAX_MESSAGE_LENGTH
             
             while remaining_text:
-                # Вычисляем размер следующей части
+                # Calculate size of next part
                 chunk_size = min(MAX_MESSAGE_LENGTH, len(remaining_text))
-                # Извлекаем часть текста
+                # Extract part of text
                 chunk = remaining_text[:chunk_size]
-                # Обновляем оставшийся текст
+                # Update remaining text
                 remaining_text = remaining_text[chunk_size:]
                 
-                # Добавляем информацию о части сообщения
+                # Add information about part of message
                 part_info = f"<i>Частина {part_number}/{total_parts}</i>\n\n" if total_parts > 1 else ""
                 
-                # Отправляем последнюю часть с клавиатурой, остальные без клавиатуры
-                if not remaining_text:  # Если это последняя часть
+                # Send last part with keyboard, others without keyboard
+                if not remaining_text:  # If this is the last part
                     await callback_query.message.answer(f"{part_info}{chunk}", reply_markup=keyboard)
                 else:
                     await callback_query.message.answer(f"{part_info}{chunk}")
                 
                 part_number += 1
     
-    # Отдельное сообщение с кнопкой возврата в главное меню
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
-    ])
-    await callback_query.message.answer('⬆️ Ваші молитви ⬆️', reply_markup=keyboard)
-
+    # Create navigation buttons
+    nav_buttons = []
+    
+    # "Back" button if this is not the first page
+    if offset > 0:
+        prev_offset = max(0, offset - batch_size)
+        nav_buttons.append(
+            InlineKeyboardButton(text='⬅️ Попередні', callback_data=f'myprayers_page_{prev_offset}')
+        )
+    
+    # "Next" button if there are more prayers
+    if offset + batch_size < total_prayers:
+        next_offset = offset + batch_size
+        nav_buttons.append(
+            InlineKeyboardButton(text='Наступні ➡️', callback_data=f'myprayers_page_{next_offset}')
+        )
+    
+    # Page information
+    start_idx = offset + 1
+    end_idx = min(offset + batch_size, total_prayers)
+    page_info = f"Ваші молитви {start_idx}-{end_idx} з {total_prayers}"
+    
+    # Form keyboard
+    keyboard_rows = []
+    if nav_buttons:
+        keyboard_rows.append(nav_buttons)
+    keyboard_rows.append([InlineKeyboardButton(text='↩️ Назад до категорій', callback_data='show_my_prayers')])
+    keyboard_rows.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    
+    # Send message with navigation and page information
+    await callback_query.message.answer(page_info, reply_markup=keyboard)
+    
+    # Answer callback_query to remove loading clock
     await callback_query.answer(show_alert=False)
+
+# Function to show user's prayers from specific category with pagination
+async def show_my_prayers_page_by_category(callback_query: CallbackQuery, category_id, offset=0, batch_size=5):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    user_id = callback_query.from_user.id
+    category_name = get_category_by_id(category_id)
+    logger.info(f'Fetching user prayers for category_id={category_id} with offset={offset}, batch_size={batch_size}')
+    
+    # Count prayers from this user in this category
+    cursor.execute('SELECT COUNT(*) FROM prayers WHERE user_id = ? AND category_id = ?', (user_id, category_id))
+    total_prayers = cursor.fetchone()[0]
+    
+    if total_prayers == 0:
+        # If no prayers in this category
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='↩️ Назад до категорій', callback_data='show_my_prayers')],
+            [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
+        ])
+        
+        await callback_query.message.answer(
+            f'У вас немає записаних молитов в категорії {category_name}.',
+            reply_markup=keyboard
+        )
+        await callback_query.answer(show_alert=False)
+        return
+    
+    # Get prayers with pagination for this user and category
+    cursor.execute('''
+    SELECT p.id, p.prayer, c.name
+    FROM prayers p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.user_id = ? AND p.category_id = ?
+    ORDER BY p.created_at DESC
+    LIMIT ? OFFSET ?
+    ''', (user_id, category_id, batch_size, offset))
+    prayers = cursor.fetchall()
+    
+    # Telegram message length limit (4096 characters)
+    MAX_MESSAGE_LENGTH = 4000  # Slightly less than the limit for safety
+    
+    # Show prayers from current page
+    for prayer_id, prayer_text, category_name in prayers:
+        # Create keyboard for actions with prayer
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text='Редагувати', callback_data=f'edit_{prayer_id}'),
+                InlineKeyboardButton(text='Видалити', callback_data=f'delete_{prayer_id}')
+            ]
+        ])
+        
+        # Add category to message
+        category_info = f"<b>Категорія: {category_name or 'Не вказана'}</b>\n\n"
+        
+        # Check message length
+        if len(prayer_text) + len(category_info) <= MAX_MESSAGE_LENGTH:
+            # If message is not too long, send it completely with keyboard
+            await callback_query.message.answer(f"{category_info}{prayer_text}", reply_markup=keyboard)
+        else:
+            # If message is too long, split it into parts
+            # Send header with category first
+            await callback_query.message.answer(category_info)
+            
+            # Split long text into parts
+            remaining_text = prayer_text
+            part_number = 1
+            total_parts = (len(prayer_text) + MAX_MESSAGE_LENGTH - 1) // MAX_MESSAGE_LENGTH
+            
+            while remaining_text:
+                # Calculate size of next part
+                chunk_size = min(MAX_MESSAGE_LENGTH, len(remaining_text))
+                # Extract part of text
+                chunk = remaining_text[:chunk_size]
+                # Update remaining text
+                remaining_text = remaining_text[chunk_size:]
+                
+                # Add information about part of message
+                part_info = f"<i>Частина {part_number}/{total_parts}</i>\n\n" if total_parts > 1 else ""
+                
+                # Send last part with keyboard, others without keyboard
+                if not remaining_text:  # If this is the last part
+                    await callback_query.message.answer(f"{part_info}{chunk}", reply_markup=keyboard)
+                else:
+                    await callback_query.message.answer(f"{part_info}{chunk}")
+                
+                part_number += 1
+    
+    # Create navigation buttons
+    nav_buttons = []
+    
+    # "Back" button if this is not the first page
+    if offset > 0:
+        prev_offset = max(0, offset - batch_size)
+        nav_buttons.append(
+            InlineKeyboardButton(text='⬅️ Попередні', callback_data=f'mycat_page_{category_id}_{prev_offset}')
+        )
+    
+    # "Next" button if there are more prayers
+    if offset + batch_size < total_prayers:
+        next_offset = offset + batch_size
+        nav_buttons.append(
+            InlineKeyboardButton(text='Наступні ➡️', callback_data=f'mycat_page_{category_id}_{next_offset}')
+        )
+    
+    # Page information
+    start_idx = offset + 1
+    end_idx = min(offset + batch_size, total_prayers)
+    page_info = f"Ваші молитви {start_idx}-{end_idx} з {total_prayers} в категорії {category_name}"
+    
+    # Form keyboard
+    keyboard_rows = []
+    if nav_buttons:
+        keyboard_rows.append(nav_buttons)
+    keyboard_rows.append([InlineKeyboardButton(text='↩️ Назад до категорій', callback_data='show_my_prayers')])
+    keyboard_rows.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    
+    # Send message with navigation and page information
+    await callback_query.message.answer(page_info, reply_markup=keyboard)
+    
+    # Answer callback_query to remove loading clock
+    await callback_query.answer(show_alert=False)
+
+# Handler for switching between user prayer pages
+@router.callback_query(F.data.startswith("myprayers_page_"))
+async def handle_my_prayers_pagination(callback_query: CallbackQuery):
+    # Extract page number from callback_data
+    offset = int(callback_query.data.split("_")[-1])
+    # Show next page
+    await show_my_prayers_page(callback_query, offset)
+
+# Handler for switching between user prayer pages by category
+@router.callback_query(F.data.startswith("mycat_page_"))
+async def handle_my_category_prayer_pagination(callback_query: CallbackQuery):
+    # Extract category_id and page number from callback_data
+    parts = callback_query.data.split("_")
+    category_id = int(parts[2])
+    offset = int(parts[3])
+    # Show next page for specific category
+    await show_my_prayers_page_by_category(callback_query, category_id, offset)
 
 @router.callback_query(F.data == "show_all_prayers")
 async def show_all_prayers(callback_query: CallbackQuery):
-    await show_prayers_page(callback_query, 0)
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    # Get all categories
+    categories = get_all_categories()
+    
+    # Create keyboard with categories
+    buttons = []
+    for category_id, category_name in categories:
+        buttons.append([InlineKeyboardButton(text=category_name, callback_data=f'allprayers_cat_{category_id}')])
+    
+    # Add "All categories" button
+    buttons.append([InlineKeyboardButton(text='Всі', callback_data='allprayers_cat_all')])
+    
+    # Add back button
+    buttons.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback_query.message.answer("Оберіть категорію молитв для перегляду:", reply_markup=keyboard)
+    await callback_query.answer(show_alert=False)
+
+@router.callback_query(F.data.startswith("allprayers_cat_"))
+async def show_all_prayers_by_category(callback_query: CallbackQuery):
+    category_param = callback_query.data.split("_")[-1]
+    
+    if category_param == 'all':
+        # Show all prayers from all categories (using existing pagination)
+        await show_prayers_page(callback_query, 0)
+    else:
+        # Show prayers from specific category
+        category_id = int(category_param)
+        await show_prayers_page_by_category(callback_query, category_id, 0)
+
+# Modified function to show prayers with pagination filtered by category
+async def show_prayers_page_by_category(callback_query: CallbackQuery, category_id, offset=0, batch_size=5):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    category_name = get_category_by_id(category_id)
+    logger.info(f'Fetching prayers for category_id={category_id} with offset={offset}, batch_size={batch_size}')
+    
+    # Count prayers in this category
+    total_prayers = count_prayers_by_category(category_id)
+    
+    if total_prayers == 0:
+        # If no prayers in this category
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='↩️ Назад до категорій', callback_data='show_all_prayers')],
+            [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
+        ])
+        
+        await callback_query.message.answer(
+            f'Поки що немає жодної молитви в категорії {category_name}.',
+            reply_markup=keyboard
+        )
+        await callback_query.answer(show_alert=False)
+        return
+    
+    # Get prayers with pagination for specific category
+    prayers = fetch_all_prayers_by_category(category_id, limit=batch_size, offset=offset)
+    
+    # Telegram message length limit (4096 characters)
+    MAX_MESSAGE_LENGTH = 4000  # Slightly less than the limit for safety
+    
+    # Show prayers from current page
+    for prayer in prayers:
+        prayer_text = prayer[0]  # Prayer text is first element
+        category_name = prayer[5] if len(prayer) > 5 else "Не вказана"  # Category is sixth element
+        
+        # Get name and surname, or use username if they don't exist
+        author = "Анонім"
+        
+        # Check first_name and last_name fields
+        if len(prayer) > 3:  # If first_name exists
+            first_name = prayer[3] if prayer[3] else ""
+            last_name = ""
+            if len(prayer) > 4:  # If last_name exists
+                last_name = prayer[4] if prayer[4] else ""
+            
+            # If name or surname exists, use them
+            if first_name or last_name:
+                author = f"{first_name} {last_name}".strip()
+        
+        # If author couldn't be formed from name and surname, use username
+        if author == "Анонім" and prayer[1]:
+            author = prayer[1]
+        
+        # Format date if it exists
+        created_at = ""
+        if len(prayer) > 2 and prayer[2]:
+            try:
+                # Try to convert date string to datetime object
+                date_obj = datetime.fromisoformat(prayer[2])
+                # Format date to more readable form
+                created_at = f" ({date_obj.strftime('%d.%m.%Y')})"
+            except:
+                # If date couldn't be converted, ignore
+                pass
+        
+        # Format message header
+        header = f"<b>Молитва від {author}{created_at}</b>\n<b>Категорія: {category_name}</b>\n\n"
+        
+        # Check message length
+        if len(prayer_text) + len(header) <= MAX_MESSAGE_LENGTH:
+            # If message is not too long, send it completely
+            await callback_query.message.answer(f"{header}{prayer_text}")
+        else:
+            # If message is too long, split it into parts
+            # Send header first
+            await callback_query.message.answer(header)
+            
+            # Split long text into parts
+            remaining_text = prayer_text
+            part_number = 1
+            total_parts = (len(prayer_text) + MAX_MESSAGE_LENGTH - 1) // MAX_MESSAGE_LENGTH
+            
+            while remaining_text:
+                # Calculate size of next part
+                chunk_size = min(MAX_MESSAGE_LENGTH, len(remaining_text))
+                # Extract part of text
+                chunk = remaining_text[:chunk_size]
+                # Update remaining text
+                remaining_text = remaining_text[chunk_size:]
+                
+                # Add information about part of message
+                part_info = f"<i>Частина {part_number}/{total_parts}</i>\n\n" if total_parts > 1 else ""
+                await callback_query.message.answer(f"{part_info}{chunk}")
+                part_number += 1
+    
+    # Create navigation buttons
+    nav_buttons = []
+    
+    # "Back" button if this is not the first page
+    if offset > 0:
+        prev_offset = max(0, offset - batch_size)
+        nav_buttons.append(
+            InlineKeyboardButton(text='⬅️ Попередні', callback_data=f'cat_page_{category_id}_{prev_offset}')
+        )
+    
+    # "Next" button if there are more prayers
+    if offset + batch_size < total_prayers:
+        next_offset = offset + batch_size
+        nav_buttons.append(
+            InlineKeyboardButton(text='Наступні ➡️', callback_data=f'cat_page_{category_id}_{next_offset}')
+        )
+    
+    # Page information
+    start_idx = offset + 1
+    end_idx = min(offset + batch_size, total_prayers)
+    page_info = f"Молитви {start_idx}-{end_idx} з {total_prayers} в категорії {category_name}"
+    
+    # Form keyboard
+    keyboard_rows = []
+    if nav_buttons:
+        keyboard_rows.append(nav_buttons)
+    keyboard_rows.append([InlineKeyboardButton(text='↩️ Назад до категорій', callback_data='show_all_prayers')])
+    keyboard_rows.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    
+    # Send message with navigation and page information
+    await callback_query.message.answer(page_info, reply_markup=keyboard)
+    
+    # Answer callback_query to remove loading clock
+    await callback_query.answer(show_alert=False)
+
+# Handler for switching between prayer pages by category
+@router.callback_query(F.data.startswith("cat_page_"))
+async def handle_category_prayer_pagination(callback_query: CallbackQuery):
+    # Extract category_id and page number from callback_data
+    parts = callback_query.data.split("_")
+    category_id = int(parts[2])
+    offset = int(parts[3])
+    # Show next page for specific category
+    await show_prayers_page_by_category(callback_query, category_id, offset)
+
+@router.callback_query(F.data.startswith("prayers_page_"))
+async def handle_prayer_pagination(callback_query: CallbackQuery):
+    # Извлекаем номер страницы из callback_data
+    offset = int(callback_query.data.split("_")[-1])
+    # Показываем следующую страницу
+    await show_prayers_page(callback_query, offset)
 
 # Функция для постепенного отображения всех молитв с пагинацией
 async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=5):
@@ -474,6 +879,7 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
     if total_prayers == 0:
         # Если молитв нет
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='↩️ Назад до категорій', callback_data='show_all_prayers')],
             [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
         ])
         
@@ -581,6 +987,7 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
     keyboard_rows = []
     if nav_buttons:
         keyboard_rows.append(nav_buttons)
+    keyboard_rows.append([InlineKeyboardButton(text='↩️ Назад до категорій', callback_data='show_all_prayers')])
     keyboard_rows.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
@@ -590,14 +997,6 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
     
     # Отвечаем на callback_query, чтобы убрать часы загрузки
     await callback_query.answer(show_alert=False)
-
-# Обработчик для переключения между страницами молитв
-@router.callback_query(F.data.startswith("prayers_page_"))
-async def handle_prayer_pagination(callback_query: CallbackQuery):
-    # Извлекаем номер страницы из callback_data
-    offset = int(callback_query.data.split("_")[-1])
-    # Показываем следующую страницу
-    await show_prayers_page(callback_query, offset)
 
 def register_handlers(dp: Dispatcher):
     # Include the router in the dispatcher

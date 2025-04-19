@@ -21,6 +21,17 @@ def fetch_prayers(user_id):
     ''', (user_id,))
     return cursor.fetchall()
 
+# Function to fetch prayers for a user filtered by category
+def fetch_prayers_by_category(user_id, category_id):
+    cursor.execute('''
+    SELECT p.id, p.prayer, c.name 
+    FROM prayers p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.user_id = ? AND p.category_id = ?
+    ORDER BY p.created_at DESC
+    ''', (user_id, category_id))
+    return cursor.fetchall()
+
 # Function to update a prayer in the database
 def update_prayer(prayer_id, new_text, category_id=None):
     now = datetime.now().isoformat()
@@ -77,6 +88,31 @@ def fetch_all_prayers(limit=10, offset=0):
     cursor.execute(query, (limit, offset))
     return cursor.fetchall()
 
+# Function to fetch all prayers from all users filtered by category
+def fetch_all_prayers_by_category(category_id, limit=10, offset=0):
+    """
+    Получает все молитвы определенной категории с пагинацией.
+    
+    Args:
+        category_id: ID категории
+        limit: Максимальное количество молитв для загрузки за один раз
+        offset: Смещение от начала списка
+        
+    Returns:
+        Список молитв определенной категории с указанным ограничением и смещением
+    """
+    query = '''
+    SELECT p.prayer, p.username, p.created_at, p.first_name, p.last_name, c.name
+    FROM prayers p
+    LEFT JOIN categories c ON p.category_id = c.id
+    WHERE p.category_id = ?
+    ORDER BY p.created_at DESC
+    LIMIT ? OFFSET ?
+    '''
+    
+    cursor.execute(query, (category_id, limit, offset))
+    return cursor.fetchall()
+
 # Function to count total prayers
 def count_all_prayers():
     """
@@ -86,4 +122,18 @@ def count_all_prayers():
         Целое число - количество молитв
     """
     cursor.execute('SELECT COUNT(*) FROM prayers')
+    return cursor.fetchone()[0]
+
+# Function to count prayers in a specific category
+def count_prayers_by_category(category_id):
+    """
+    Подсчитывает количество молитв в определенной категории.
+    
+    Args:
+        category_id: ID категории
+        
+    Returns:
+        Целое число - количество молитв в категории
+    """
+    cursor.execute('SELECT COUNT(*) FROM prayers WHERE category_id = ?', (category_id,))
     return cursor.fetchone()[0] 
