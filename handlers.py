@@ -18,6 +18,9 @@ from datetime import datetime
 # Get logger
 logger = logging.getLogger(__name__)
 
+# Admin user ID - make sure this matches the ID in bot.py
+ADMIN_USER_ID = 282269567
+
 # Create router instance
 router = Router()
 
@@ -384,7 +387,10 @@ async def prayer_callback(callback_query: CallbackQuery, state: FSMContext):
     
     await callback_query.answer(show_alert=False)
     data = callback_query.data
-
+    
+    # Check if the user is admin
+    is_admin = callback_query.from_user.id == ADMIN_USER_ID
+    
     if data.startswith('edit_'):
         prayer_id = int(data.split('_')[1])
         result = get_prayer_by_id(prayer_id)
@@ -392,48 +398,69 @@ async def prayer_callback(callback_query: CallbackQuery, state: FSMContext):
         if result:
             prayer_text, category_id, category_name = result
             
-            # Check the prayer length for editing
-            if len(prayer_text) > 3072:
-                # Prayer is too long to edit in Telegram
-                # Create a keyboard with buttons for deletion and return to menu
+            # Also get the user_id of the prayer owner
+            cursor.execute('SELECT user_id FROM prayers WHERE id = ?', (prayer_id,))
+            owner_result = cursor.fetchone()
+            
+            # Check if the user is the owner of the prayer or admin
+            if is_admin or (owner_result and owner_result[0] == callback_query.from_user.id):
+                # Check the prayer length for editing
+                if len(prayer_text) > 3072:
+                    # Prayer is too long to edit in Telegram
+                    # Create a keyboard with buttons for deletion and return to menu
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text='Видалити цю молитву', callback_data=f'delete_{prayer_id}'),
+                            InlineKeyboardButton(text='Скасувати', callback_data='cancel_edit')
+                        ],
+                        [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
+                    ])
+                    
+                    # Send a warning to the user
+                    await callback_query.message.answer(
+                        text=f"⚠️ <b>Ця молитва занадто довга для редагування</b>\n\n"
+                             f"Через обмеження Telegram, дуже довгі молитви неможливо редагувати.\n"
+                             f"Ви можете видалити цю молитву та створити нову замість неї.",
+                        reply_markup=keyboard
+                    )
+                else:
+                    # Offer to choose a new category or keep the existing one
+                    categories = get_all_categories()
+                    
+                    # Create keyboard with categories and cancel button
+                    buttons = []
+                    for cat_id, cat_name in categories:
+                        if cat_id == category_id:
+                            # Mark the current category
+                            buttons.append([InlineKeyboardButton(text=f"✓ {cat_name}", callback_data=f'editcat_{prayer_id}_{cat_id}')])
+                        else:
+                            buttons.append([InlineKeyboardButton(text=cat_name, callback_data=f'editcat_{prayer_id}_{cat_id}')])
+                    
+                    buttons.append([InlineKeyboardButton(text='Скасувати', callback_data='cancel_edit')])
+                    buttons.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+                    
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+                    
+                    # Send a message with category selection
+                    if is_admin and owner_result and owner_result[0] != callback_query.from_user.id:
+                        admin_notice = f"Ви редагуєте чужу молитву як адміністратор.\n"
+                    else:
+                        admin_notice = ""
+                    
+                    await callback_query.message.answer(
+                        text=f"✏️ <b>Редагування молитви</b>\n\n{admin_notice}"
+                             f"Поточна категорія: <b>{category_name or 'Не вказана'}</b>\n\n"
+                             f"Оберіть нову категорію або залиште поточну:",
+                        reply_markup=keyboard
+                    )
+            else:
+                # User is not authorized to edit this prayer
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text='Видалити цю молитву', callback_data=f'delete_{prayer_id}'),
-                        InlineKeyboardButton(text='Скасувати', callback_data='cancel_edit')
-                    ],
                     [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
                 ])
                 
-                # Send a warning to the user
                 await callback_query.message.answer(
-                    text=f"⚠️ <b>Ця молитва занадто довга для редагування</b>\n\n"
-                         f"Через обмеження Telegram, дуже довгі молитви неможливо редагувати.\n"
-                         f"Ви можете видалити цю молитву та створити нову замість неї.",
-                    reply_markup=keyboard
-                )
-            else:
-                # Offer to choose a new category or keep the existing one
-                categories = get_all_categories()
-                
-                # Create keyboard with categories and cancel button
-                buttons = []
-                for cat_id, cat_name in categories:
-                    if cat_id == category_id:
-                        # Mark the current category
-                        buttons.append([InlineKeyboardButton(text=f"✓ {cat_name}", callback_data=f'editcat_{prayer_id}_{cat_id}')])
-                    else:
-                        buttons.append([InlineKeyboardButton(text=cat_name, callback_data=f'editcat_{prayer_id}_{cat_id}')])
-                
-                buttons.append([InlineKeyboardButton(text='Скасувати', callback_data='cancel_edit')])
-                buttons.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
-                
-                keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-                
-                # Send a message with category selection
-                await callback_query.message.answer(
-                    text=f"✏️ <b>Редагування молитви</b>\n\n"
-                         f"Поточна категорія: <b>{category_name or 'Не вказана'}</b>\n\n"
-                         f"Оберіть нову категорію або залиште поточну:",
+                    text='Ви не можете редагувати цю молитву, оскільки не є її автором.',
                     reply_markup=keyboard
                 )
         else:
@@ -449,26 +476,71 @@ async def prayer_callback(callback_query: CallbackQuery, state: FSMContext):
 
     elif data.startswith('delete_'):
         prayer_id = int(data.split('_')[1])
-        delete_prayer(prayer_id)
         
-        # Add a button to return to the main menu
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
-        ])
+        # Get the user_id of the prayer owner
+        cursor.execute('SELECT user_id FROM prayers WHERE id = ?', (prayer_id,))
+        owner_result = cursor.fetchone()
         
-        await callback_query.message.answer(
-            text='Молитву видалено.',
-            reply_markup=keyboard
-        )
+        # Check if the user is the owner of the prayer or admin
+        if is_admin or (owner_result and owner_result[0] == callback_query.from_user.id):
+            delete_prayer(prayer_id)
+            
+            # Add a button to return to the main menu
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
+            ])
+            
+            # If admin is deleting someone else's prayer, show a special message
+            if is_admin and owner_result and owner_result[0] != callback_query.from_user.id:
+                await callback_query.message.answer(
+                    text='Молитву видалено адміністратором.',
+                    reply_markup=keyboard
+                )
+            else:
+                await callback_query.message.answer(
+                    text='Молитву видалено.',
+                    reply_markup=keyboard
+                )
+        else:
+            # User is not authorized to delete this prayer
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
+            ])
+            
+            await callback_query.message.answer(
+                text='Ви не можете видалити цю молитву, оскільки не є її автором.',
+                reply_markup=keyboard
+            )
 
 @router.callback_query(F.data.startswith("editcat_"))
 async def edit_prayer_category(callback_query: CallbackQuery, state: FSMContext):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
+    # Check if the user is admin
+    is_admin = callback_query.from_user.id == ADMIN_USER_ID
+    
     # Parse the callback data to get prayer_id and category_id
     _, prayer_id, category_id = callback_query.data.split("_")
     prayer_id = int(prayer_id)
     category_id = int(category_id)
+    
+    # Get the prayer owner user_id
+    cursor.execute('SELECT user_id FROM prayers WHERE id = ?', (prayer_id,))
+    owner_result = cursor.fetchone()
+    
+    # Check if the user is the owner of the prayer or admin
+    if not is_admin and (not owner_result or owner_result[0] != callback_query.from_user.id):
+        # User is not authorized to edit this prayer
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
+        ])
+        
+        await callback_query.message.answer(
+            text='Ви не можете редагувати цю молитву, оскільки не є її автором.',
+            reply_markup=keyboard
+        )
+        await callback_query.answer(show_alert=False)
+        return
     
     # Get the category name
     category_name = get_category_by_id(category_id)
@@ -491,10 +563,15 @@ async def edit_prayer_category(callback_query: CallbackQuery, state: FSMContext)
             [InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')]
         ])
         
+        # If admin is editing someone else's prayer, show a notice
+        admin_notice = ""
+        if is_admin and owner_result and owner_result[0] != callback_query.from_user.id:
+            admin_notice = "Ви редагуєте чужу молитву як адміністратор.\n\n"
+        
         # Send a message with category selection
         await callback_query.message.answer(
             text=f"✏️ <b>Редагування молитви в категорії {category_name}</b>\n\n"
-                 f"{prayer_text}\n\n"
+                 f"{admin_notice}{prayer_text}\n\n"
                  f"<i>Будь ласка, надішліть новий текст молитви або натисніть Скасувати.</i>",
             reply_markup=keyboard
         )
@@ -868,6 +945,9 @@ async def show_all_prayers_by_category(callback_query: CallbackQuery):
 async def show_prayers_page_by_category(callback_query: CallbackQuery, category_id, offset=0, batch_size=5):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
+    # Check if the user is admin
+    is_admin = callback_query.from_user.id == ADMIN_USER_ID
+    
     category_name = get_category_by_id(category_id)
     logger.info(f'Fetching prayers for category_id={category_id} with offset={offset}, batch_size={batch_size}')
     
@@ -897,7 +977,30 @@ async def show_prayers_page_by_category(callback_query: CallbackQuery, category_
     # Show prayers from current page
     for prayer in prayers:
         prayer_text = prayer[0]  # Prayer text is first element
+        prayer_username = prayer[1]  # Username is the second element
+        prayer_user_id = None  # We need to query for the user_id
         category_name = prayer[5] if len(prayer) > 5 else "Не вказана"  # Category is sixth element
+        
+        # Get prayer_id to enable admin edit/delete functionality
+        if is_admin:
+            # Get the id of this prayer by querying the database
+            cursor.execute('''
+            SELECT id, user_id FROM prayers 
+            WHERE prayer = ? AND username = ? AND category_id = ?
+            ''', (prayer_text, prayer_username, category_id))
+            result = cursor.fetchone()
+            prayer_id = result[0] if result else None
+            prayer_user_id = result[1] if result else None
+            
+            # Create keyboard with edit/delete buttons for admin
+            admin_keyboard = None
+            if prayer_id:
+                admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text='✏️ Редагувати', callback_data=f'edit_{prayer_id}'),
+                        InlineKeyboardButton(text='🗑️ Видалити', callback_data=f'delete_{prayer_id}')
+                    ]
+                ])
         
         # Get name and surname, or use username if they don't exist
         author = "Анонім"
@@ -930,12 +1033,18 @@ async def show_prayers_page_by_category(callback_query: CallbackQuery, category_
                 pass
         
         # Format message header
-        header = f"<b>Молитва від {author}{created_at}</b>\n<b>Категорія: {category_name}</b>\n\n"
+        header = f"<b>Молитва від {author}{created_at}</b>\n"
+        if is_admin and prayer_user_id:
+            header += f"<b>ID користувача:</b> <code>{prayer_user_id}</code>\n"
+        header += f"<b>Категорія: {category_name}</b>\n\n"
         
         # Check message length
         if len(prayer_text) + len(header) <= MAX_MESSAGE_LENGTH:
             # If message is not too long, send it completely
-            await callback_query.message.answer(f"{header}{prayer_text}")
+            if is_admin and admin_keyboard:
+                await callback_query.message.answer(f"{header}{prayer_text}", reply_markup=admin_keyboard)
+            else:
+                await callback_query.message.answer(f"{header}{prayer_text}")
         else:
             # If message is too long, split it into parts
             # Send header first
@@ -956,7 +1065,12 @@ async def show_prayers_page_by_category(callback_query: CallbackQuery, category_
                 
                 # Add information about part of message
                 part_info = f"<i>Частина {part_number}/{total_parts}</i>\n\n" if total_parts > 1 else ""
-                await callback_query.message.answer(f"{part_info}{chunk}")
+                
+                # Only add admin keyboard to the last chunk if we're admin
+                if not remaining_text and is_admin and admin_keyboard:
+                    await callback_query.message.answer(f"{part_info}{chunk}", reply_markup=admin_keyboard)
+                else:
+                    await callback_query.message.answer(f"{part_info}{chunk}")
                 part_number += 1
     
     # Create navigation buttons
@@ -1017,6 +1131,9 @@ async def handle_prayer_pagination(callback_query: CallbackQuery):
 async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=5):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
+    # Check if the user is admin
+    is_admin = callback_query.from_user.id == ADMIN_USER_ID
+    
     logger.info(f'Fetching prayers with offset={offset}, batch_size={batch_size}')
     
     # Get the total number of prayers for pagination
@@ -1045,7 +1162,30 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
     # Show prayers from the current page
     for prayer in prayers:
         prayer_text = prayer[0]  # Prayer text is the first element
+        prayer_username = prayer[1]  # Username is the second element
+        prayer_user_id = None  # We need to query for the user_id
         category_name = prayer[5] if len(prayer) > 5 else "Не вказана"  # Category is the sixth element
+        
+        # Get prayer_id to enable admin edit/delete functionality
+        if is_admin:
+            # Get the id of this prayer by querying the database
+            cursor.execute('''
+            SELECT id, user_id, category_id FROM prayers 
+            WHERE prayer = ? AND username = ?
+            ''', (prayer_text, prayer_username))
+            result = cursor.fetchone()
+            prayer_id = result[0] if result else None
+            prayer_user_id = result[1] if result else None
+            
+            # Create keyboard with edit/delete buttons for admin
+            admin_keyboard = None
+            if prayer_id:
+                admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text='✏️ Редагувати', callback_data=f'edit_{prayer_id}'),
+                        InlineKeyboardButton(text='🗑️ Видалити', callback_data=f'delete_{prayer_id}')
+                    ]
+                ])
         
         # Get name and surname, or use username if they don't exist
         author = "Анонім"
@@ -1078,12 +1218,18 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
                 pass
         
         # Format message header
-        header = f"<b>Молитва від {author}{created_at}</b>\n<b>Категорія: {category_name}</b>\n\n"
+        header = f"<b>Молитва від {author}{created_at}</b>\n"
+        if is_admin and prayer_user_id:
+            header += f"<b>ID користувача:</b> <code>{prayer_user_id}</code>\n"
+        header += f"<b>Категорія: {category_name}</b>\n\n"
         
         # Check message length
         if len(prayer_text) + len(header) <= MAX_MESSAGE_LENGTH:
             # If message is not too long, send it completely
-            await callback_query.message.answer(f"{header}{prayer_text}")
+            if is_admin and admin_keyboard:
+                await callback_query.message.answer(f"{header}{prayer_text}", reply_markup=admin_keyboard)
+            else:
+                await callback_query.message.answer(f"{header}{prayer_text}")
         else:
             # If message is too long, split it into parts
             # Send header first
@@ -1104,7 +1250,12 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
                 
                 # Add information about part of message
                 part_info = f"<i>Частина {part_number}/{total_parts}</i>\n\n" if total_parts > 1 else ""
-                await callback_query.message.answer(f"{part_info}{chunk}")
+                
+                # Only add admin keyboard to the last chunk if we're admin
+                if not remaining_text and is_admin and admin_keyboard:
+                    await callback_query.message.answer(f"{part_info}{chunk}", reply_markup=admin_keyboard)
+                else:
+                    await callback_query.message.answer(f"{part_info}{chunk}")
                 part_number += 1
     
     # Create navigation buttons
