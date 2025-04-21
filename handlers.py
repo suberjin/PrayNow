@@ -1,6 +1,6 @@
 from aiogram import Bot, Router, F, Dispatcher
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import logging
@@ -9,7 +9,10 @@ from services import (
     fetch_all_prayers, count_all_prayers, fetch_prayers_by_category, 
     fetch_all_prayers_by_category, count_prayers_by_category
 )
-from database import get_all_categories, get_category_by_id, cursor
+from database import (
+    get_all_categories, get_category_by_id, cursor, 
+    add_user_to_whitelist, remove_user_from_whitelist, get_all_whitelisted_users
+)
 from datetime import datetime
 
 # Get logger
@@ -52,6 +55,91 @@ async def start_handler(message: Message):
     # Call the common start function
     logger.info(f'User {message.from_user.id} used /start command')
     await start_without_command(message)
+
+# Admin command to add a user to whitelist
+@router.message(Command("whitelist_add"))
+async def whitelist_add(message: Message, command: CommandObject):
+    args = command.args
+    if not args:
+        await message.answer("Використання: /whitelist_add ID_або_username\nНаприклад:\n/whitelist_add 123456789\n/whitelist_add @username")
+        return
+    
+    # Parse the input
+    arg = args.strip()
+    if arg.startswith('@'):
+        # It's a username
+        username = arg[1:]  # Remove @ sign
+        if add_user_to_whitelist(None, username):
+            await message.answer(f"✅ Користувача @{username} додано до білого списку.")
+        else:
+            await message.answer(f"❌ Помилка при додаванні користувача @{username} до білого списку.")
+    else:
+        # It's a user_id
+        try:
+            user_id = int(arg)
+            if add_user_to_whitelist(user_id):
+                await message.answer(f"✅ Користувача з ID {user_id} додано до білого списку.")
+            else:
+                await message.answer(f"❌ Помилка при додаванні користувача з ID {user_id} до білого списку.")
+        except ValueError:
+            await message.answer("❌ Невірний формат ID користувача. ID має бути числом.")
+
+# Admin command to remove a user from whitelist
+@router.message(Command("whitelist_remove"))
+async def whitelist_remove(message: Message, command: CommandObject):
+    args = command.args
+    if not args:
+        await message.answer("Використання: /whitelist_remove ID_або_username\nНаприклад:\n/whitelist_remove 123456789\n/whitelist_remove @username")
+        return
+    
+    # Parse the input
+    arg = args.strip()
+    if arg.startswith('@'):
+        # It's a username
+        username = arg[1:]  # Remove @ sign
+        if remove_user_from_whitelist(username=username):
+            await message.answer(f"✅ Користувача @{username} видалено з білого списку.")
+        else:
+            await message.answer(f"❌ Користувача @{username} не знайдено в білому списку.")
+    else:
+        # It's a user_id
+        try:
+            user_id = int(arg)
+            if remove_user_from_whitelist(user_id=user_id):
+                await message.answer(f"✅ Користувача з ID {user_id} видалено з білого списку.")
+            else:
+                await message.answer(f"❌ Користувача з ID {user_id} не знайдено в білому списку.")
+        except ValueError:
+            await message.answer("❌ Невірний формат ID користувача. ID має бути числом.")
+
+# Admin command to list all whitelisted users
+@router.message(Command("whitelist_list"))
+async def whitelist_list(message: Message):
+    users = get_all_whitelisted_users()
+    if not users:
+        await message.answer("Білий список порожній.")
+        return
+    
+    # Format the response
+    response = "📋 <b>Список дозволених користувачів:</b>\n\n"
+    for user_id, username, added_at in users:
+        # Format date
+        date_str = ""
+        if added_at:
+            try:
+                date_obj = datetime.fromisoformat(added_at)
+                date_str = f" (доданий {date_obj.strftime('%d.%m.%Y')})"
+            except:
+                pass
+        
+        user_str = f"ID: <code>{user_id}</code>"
+        if username:
+            user_str += f", Username: @{username}"
+        user_str += date_str
+        
+        response += f"• {user_str}\n"
+    
+    await message.answer(response)
 
 @router.message(Command("send_prayer"))
 async def send_prayer_command(message: Message, state: FSMContext):
@@ -1056,13 +1144,14 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
     # Answer callback_query to remove loading clock
     await callback_query.answer(show_alert=False)
 
-def register_handlers(dp: Dispatcher):
+def register_handlers(dp: Dispatcher, admin_filter=None):
     # Log the handlers registration
     logger.info('Registering message handlers')
     
     # Create a new router with proper priority for message handlers
     priority_router = Router()
     command_router = Router()
+    admin_router = Router()
     
     # Register command handlers first
     command_router.message.register(start_handler, Command("start"))
@@ -1070,16 +1159,25 @@ def register_handlers(dp: Dispatcher):
     command_router.message.register(my_prayers, Command("my_prayers"))
     command_router.message.register(all_prayers_command, Command("all_prayers"))
     
+    # Register admin commands with admin filter
+    if admin_filter:
+        admin_router.message.register(whitelist_add, Command("whitelist_add"), admin_filter)
+        admin_router.message.register(whitelist_remove, Command("whitelist_remove"), admin_filter)
+        admin_router.message.register(whitelist_list, Command("whitelist_list"), admin_filter)
+    
     # Add the PrayerStates.expecting_prayer handler first (high priority)
     priority_router.message.register(capture_prayer, PrayerStates.expecting_prayer)
     
     # Add the generic text handler last (low priority)
     priority_router.message.register(handle_text, F.text)
     
-    # Include the command router first for highest priority
+    # Include the admin router first for highest priority
+    dp.include_router(admin_router)
+    
+    # Include the command router next
     dp.include_router(command_router)
     
-    # Include the priority router second
+    # Include the priority router
     dp.include_router(priority_router)
     
     # Include the main router for remaining handlers
