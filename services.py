@@ -79,14 +79,14 @@ def get_prayer_by_id(prayer_id):
 # Function to fetch all prayers from all users
 def fetch_all_prayers(limit=10, offset=0):
     """
-    Получает все молитвы с пагинацией для избежания загрузки слишком большого набора данных.
+    Gets all prayers with pagination to avoid loading too much data at once.
     
     Args:
-        limit: Максимальное количество молитв для загрузки за один раз
-        offset: Смещение от начала списка
+        limit: Maximum number of prayers to load at once
+        offset: Offset from the beginning of the list
         
     Returns:
-        Список молитв с указанным ограничением и смещением
+        List of prayers with the specified limit and offset
     """
     query = '''
     SELECT p.prayer, p.username, p.created_at, p.first_name, p.last_name, c.name
@@ -102,15 +102,15 @@ def fetch_all_prayers(limit=10, offset=0):
 # Function to fetch all prayers from all users filtered by category
 def fetch_all_prayers_by_category(category_id, limit=10, offset=0):
     """
-    Получает все молитвы определенной категории с пагинацией.
+    Gets all prayers of a specific category with pagination.
     
     Args:
-        category_id: ID категории
-        limit: Максимальное количество молитв для загрузки за один раз
-        offset: Смещение от начала списка
+        category_id: Category ID
+        limit: Maximum number of prayers to load at once
+        offset: Offset from the beginning of the list
         
     Returns:
-        Список молитв определенной категории с указанным ограничением и смещением
+        List of prayers of the specified category with the specified limit and offset
     """
     query = '''
     SELECT p.prayer, p.username, p.created_at, p.first_name, p.last_name, c.name
@@ -127,10 +127,10 @@ def fetch_all_prayers_by_category(category_id, limit=10, offset=0):
 # Function to count total prayers
 def count_all_prayers():
     """
-    Подсчитывает общее количество молитв.
+    Counts the total number of prayers.
     
     Returns:
-        Целое число - количество молитв
+        Integer - number of prayers
     """
     cursor.execute('SELECT COUNT(*) FROM prayers')
     return cursor.fetchone()[0]
@@ -138,13 +138,13 @@ def count_all_prayers():
 # Function to count prayers in a specific category
 def count_prayers_by_category(category_id):
     """
-    Подсчитывает количество молитв в определенной категории.
+    Counts the number of prayers in a specific category.
     
     Args:
-        category_id: ID категории
+        category_id: Category ID
         
     Returns:
-        Целое число - количество молитв в категории
+        Integer - number of prayers in the category
     """
     cursor.execute('SELECT COUNT(*) FROM prayers WHERE category_id = ?', (category_id,))
     return cursor.fetchone()[0] 
