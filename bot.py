@@ -56,7 +56,10 @@ async def main():
     
     # Set up commands for the bot
     commands = [
-        BotCommand(command="start", description="Розпочати роботу з ботом")
+        BotCommand(command="start", description="Розпочати роботу з ботом"),
+        BotCommand(command="send_prayer", description="Надіслати молитву"),
+        BotCommand(command="my_prayers", description="Показати мої молитви"),
+        BotCommand(command="all_prayers", description="Показати всі молитви")
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
     

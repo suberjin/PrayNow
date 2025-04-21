@@ -1,12 +1,18 @@
 import sqlite3
 from datetime import datetime
+import logging
+
+# Get logger
+logger = logging.getLogger(__name__)
 
 # Connect to SQLite database (or create it if it doesn't exist)
+logger.info("Connecting to prayers.db database")
 conn = sqlite3.connect('prayers.db', check_same_thread=False)
 cursor = conn.cursor()
 
 # Create the prayers and categories tables if they don't exist
 def create_table():
+    logger.info("Creating database tables if they don't exist")
     # Create categories table if it doesn't exist
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS categories (
@@ -45,16 +51,25 @@ def create_table():
         cursor.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (category,))
     
     conn.commit()
+    logger.info("Database setup completed")
 
 # Get all categories
 def get_all_categories():
+    logger.debug("Fetching all categories")
     cursor.execute('SELECT id, name FROM categories ORDER BY name')
-    return cursor.fetchall()
+    categories = cursor.fetchall()
+    logger.debug(f"Retrieved {len(categories)} categories")
+    return categories
 
 # Get category by ID
 def get_category_by_id(category_id):
+    logger.debug(f"Fetching category with ID: {category_id}")
     cursor.execute('SELECT name FROM categories WHERE id = ?', (category_id,))
     result = cursor.fetchone()
+    if result:
+        logger.debug(f"Found category: {result[0]}")
+    else:
+        logger.warning(f"Category with ID {category_id} not found")
     return result[0] if result else None
 
 # Expose the connection and cursor for use in other modules

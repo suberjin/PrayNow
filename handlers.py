@@ -1,5 +1,5 @@
 from aiogram import Bot, Router, F, Dispatcher
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -11,7 +11,6 @@ from services import (
 )
 from database import get_all_categories, get_category_by_id, cursor
 from datetime import datetime
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -23,6 +22,14 @@ router = Router()
 class PrayerStates(StatesGroup):
     selecting_category = State()
     expecting_prayer = State()
+    
+    @classmethod
+    def get_state_names(cls):
+        """Helper function to log all state names for debugging"""
+        return {
+            cls.selecting_category: "selecting_category",
+            cls.expecting_prayer: "expecting_prayer"
+        }
 
 # Функция для создания главного меню
 async def show_main_menu(message_or_callback):
@@ -45,39 +52,78 @@ async def start_handler(message: Message):
     # Call the common start function
     await start_without_command(message)
 
-# Handle any text message from a new user
-@router.message(F.text)
+@router.message(Command("send_prayer"))
+async def send_prayer_command(message: Message, state: FSMContext):
+    # Similar to the callback handler, but for command
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    # Get all categories
+    categories = get_all_categories()
+    
+    # Create keyboard with categories
+    buttons = []
+    for category_id, category_name in categories:
+        buttons.append([InlineKeyboardButton(text=category_name, callback_data=f'category_{category_id}')])
+    
+    # Add back button
+    buttons.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    # Log user ID for debugging
+    user_id = message.from_user.id
+    logger.info(f'User {user_id} used /send_prayer command')
+    
+    await message.answer("Оберіть категорію молитви:", reply_markup=keyboard)
+    await state.set_state(PrayerStates.selecting_category)
+    logger.info('State set to selecting_category')
+
+@router.message(Command("all_prayers"))
+async def all_prayers_command(message: Message):
+    # Similar to the callback handler for all prayers
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    # Get all categories
+    categories = get_all_categories()
+    
+    # Create keyboard with categories
+    buttons = []
+    for category_id, category_name in categories:
+        buttons.append([InlineKeyboardButton(text=category_name, callback_data=f'allprayers_cat_{category_id}')])
+    
+    # Add "All categories" button
+    buttons.append([InlineKeyboardButton(text='Всі', callback_data='allprayers_cat_all')])
+    
+    # Add back button
+    buttons.append([InlineKeyboardButton(text='🏠 До головного меню', callback_data='main_menu')])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    logger.info(f'User {message.from_user.id} used /all_prayers command')
+    await message.answer("Оберіть категорію молитв для перегляду:", reply_markup=keyboard)
+
+# Handle any text message from a new user - with lower priority
+@router.message(F.text, flags={"low_priority": True})
 async def handle_text(message: Message, state: FSMContext):
     # Check if user is already in a specific state
     current_state = await state.get_state()
     
+    # Log for debugging
+    user_id = message.from_user.id
+    logger.info(f'handle_text triggered for user {user_id}. Current state: {current_state}')
+    
     # If user is already in a state, let other handlers process the message
     if current_state is not None:
+        logger.info(f'User {user_id} is in state {current_state}, skipping generic text handler')
         return
     
-    # If the message is "Start" trigger the start handler
-    if message.text == "Start" or message.text == "Старт":
-        await start_without_command(message)
-        return
-    
-    # If it's a new user, show the start button
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Старт")]],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    
-    await message.answer(
-        "Натисніть кнопку для початку роботи з ботом",
-        reply_markup=keyboard
-    )
+    # For any text message from a new user, just show the main menu directly
+    logger.info(f'New user {user_id} sent text message, showing main menu directly')
+    await start_without_command(message)
 
 # Handler for the Start button press
 async def start_without_command(message: Message):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
-    # Remove the keyboard with the Start button
-    remove_keyboard = ReplyKeyboardRemove()
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='Надіслати молитву', callback_data='send_pray')],
@@ -116,6 +162,10 @@ async def process_callback_send_pray(callback_query: CallbackQuery, state: FSMCo
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     
+    # Log user ID for debugging
+    user_id = callback_query.from_user.id
+    logger.info(f'User {user_id} is selecting a prayer category')
+    
     await callback_query.message.answer("Оберіть категорію молитви:", reply_markup=keyboard)
     await state.set_state(PrayerStates.selecting_category)
     logger.info('State set to selecting_category')
@@ -129,6 +179,10 @@ async def process_category_selection(callback_query: CallbackQuery, state: FSMCo
     # Extract category ID from callback data
     category_id = int(callback_query.data.split("_")[1])
     category_name = get_category_by_id(category_id)
+    
+    # Log category selection for debugging
+    user_id = callback_query.from_user.id
+    logger.info(f'User {user_id} selected category: {category_name} (ID: {category_id})')
     
     # Store selected category in state
     await state.update_data(selected_category_id=category_id, selected_category_name=category_name)
@@ -145,10 +199,13 @@ async def process_category_selection(callback_query: CallbackQuery, state: FSMCo
     
     # Move to next state
     await state.set_state(PrayerStates.expecting_prayer)
-    logger.info('State set to expecting_prayer')
+    logger.info(f'State set to expecting_prayer for user {user_id}')
 
 @router.message(PrayerStates.expecting_prayer)
 async def capture_prayer(message: Message, state: FSMContext):
+    # Log entry into the handler for debugging
+    logger.info(f'CAPTURE_PRAYER HANDLER TRIGGERED for user {message.from_user.id} with text "{message.text[:20]}..."')
+    
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
     user_id = message.from_user.id
@@ -157,8 +214,11 @@ async def capture_prayer(message: Message, state: FSMContext):
     last_name = message.from_user.last_name or ""
     prayer_text = message.text
     
+    logger.info(f'Received prayer text from user {user_id}')
+    
     # Get state data
     state_data = await state.get_data()
+    logger.info(f'State data: {state_data}')
 
     # Check if we're editing an existing prayer
     if 'edit_prayer_id' in state_data:
@@ -166,6 +226,8 @@ async def capture_prayer(message: Message, state: FSMContext):
         
         # Check if we need to update the category
         category_id = state_data.get('selected_category_id', None)
+        
+        logger.info(f'Updating prayer {prayer_id} for user {user_id}')
         
         # Обновляем молитву в БД
         update_prayer(prayer_id, prayer_text, category_id)
@@ -185,6 +247,8 @@ async def capture_prayer(message: Message, state: FSMContext):
         category_id = state_data.get('selected_category_id')
         category_name = state_data.get('selected_category_name', 'Невідома')
         
+        logger.info(f'Inserting new prayer for user {user_id} in category {category_name} (ID: {category_id})')
+        
         # Insert new prayer with category
         insert_prayer(user_id, username, prayer_text, category_id, first_name, last_name)
         
@@ -199,6 +263,7 @@ async def capture_prayer(message: Message, state: FSMContext):
             reply_markup=keyboard
         )
 
+    logger.info(f'Clearing state for user {user_id}')
     await state.clear()
 
 @router.message(Command("my_prayers"))
@@ -1040,5 +1105,20 @@ async def show_prayers_page(callback_query: CallbackQuery, offset=0, batch_size=
     await callback_query.answer(show_alert=False)
 
 def register_handlers(dp: Dispatcher):
-    # Include the router in the dispatcher
+    # Log the handlers registration
+    logger.info('Registering message handlers')
+    
+    # Create a new router with proper priority for message handlers
+    priority_router = Router()
+    
+    # Add the PrayerStates.expecting_prayer handler first (high priority)
+    priority_router.message.register(capture_prayer, PrayerStates.expecting_prayer)
+    
+    # Add the generic text handler last (low priority)
+    priority_router.message.register(handle_text, F.text)
+    
+    # Include the priority router first
+    dp.include_router(priority_router)
+    
+    # Include the main router
     dp.include_router(router)

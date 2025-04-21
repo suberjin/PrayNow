@@ -1,14 +1,25 @@
 from database import conn, cursor
 from datetime import datetime
+import logging
+
+# Get logger
+logger = logging.getLogger(__name__)
 
 # Function to insert a prayer into the database
 def insert_prayer(user_id, username, prayer, category_id, first_name="", last_name=""):
-    now = datetime.now().isoformat()
-    cursor.execute('''
-    INSERT INTO prayers (user_id, username, first_name, last_name, prayer, category_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, username, first_name, last_name, prayer, category_id, now, now))
-    conn.commit()
+    logger.info(f"Inserting prayer for user {user_id} in category {category_id}")
+    try:
+        now = datetime.now().isoformat()
+        cursor.execute('''
+        INSERT INTO prayers (user_id, username, first_name, last_name, prayer, category_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, username, first_name, last_name, prayer, category_id, now, now))
+        conn.commit()
+        logger.info(f"Prayer inserted successfully for user {user_id}, rowid: {cursor.lastrowid}")
+        return True
+    except Exception as e:
+        logger.error(f"Error inserting prayer: {str(e)}")
+        return False
 
 # Function to fetch all prayers for a user
 def fetch_prayers(user_id):
